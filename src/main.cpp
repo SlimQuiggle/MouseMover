@@ -13,6 +13,8 @@
 #include <string>
 #include <vector>
 
+#include "../res/resource.h"
+
 namespace {
 
 constexpr wchar_t kWindowClassName[] = L"MouseMoverMainWindow";
@@ -506,6 +508,22 @@ void ShowMainWindow() {
     SetForegroundWindow(g_app.hwnd);
 }
 
+HICON LoadAppIcon(const HINSTANCE instance, const int width, const int height) {
+    HICON icon = static_cast<HICON>(LoadImageW(
+        instance,
+        MAKEINTRESOURCEW(IDI_APP_ICON),
+        IMAGE_ICON,
+        width,
+        height,
+        LR_DEFAULTCOLOR | LR_SHARED));
+
+    if (icon == nullptr) {
+        icon = LoadIconW(nullptr, IDI_APPLICATION);
+    }
+
+    return icon;
+}
+
 void AddTrayIcon() {
     ZeroMemory(&g_app.trayIcon, sizeof(g_app.trayIcon));
     g_app.trayIcon.cbSize = sizeof(g_app.trayIcon);
@@ -513,7 +531,7 @@ void AddTrayIcon() {
     g_app.trayIcon.uID = kTrayIconId;
     g_app.trayIcon.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     g_app.trayIcon.uCallbackMessage = kTrayMessage;
-    g_app.trayIcon.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    g_app.trayIcon.hIcon = LoadAppIcon(g_app.instance, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON));
     StringCchCopyW(g_app.trayIcon.szTip, ARRAYSIZE(g_app.trayIcon.szTip), L"MouseMover - Stopped");
 
     if (Shell_NotifyIconW(NIM_ADD, &g_app.trayIcon) != FALSE) {
@@ -697,11 +715,11 @@ bool RegisterWindowClass(const HINSTANCE instance) {
     windowClass.style = CS_HREDRAW | CS_VREDRAW;
     windowClass.lpfnWndProc = WindowProc;
     windowClass.hInstance = instance;
-    windowClass.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    windowClass.hIcon = LoadAppIcon(instance, GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON));
     windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     windowClass.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
     windowClass.lpszClassName = kWindowClassName;
-    windowClass.hIconSm = LoadIconW(nullptr, IDI_APPLICATION);
+    windowClass.hIconSm = LoadAppIcon(instance, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON));
 
     return RegisterClassExW(&windowClass) != 0;
 }
@@ -872,4 +890,3 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
 
     return static_cast<int>(message.wParam);
 }
-

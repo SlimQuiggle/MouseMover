@@ -88,7 +88,13 @@
   <ItemGroup>
     <ClCompile Include="src\main.cpp" />
   </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="res\MouseMover.rc" />
+  </ItemGroup>
+  <ItemGroup>
+    <Image Include="res\MouseMover.ico" />
+    <None Include="assets\mousemover-icon-source.png" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />
 </Project>
-
