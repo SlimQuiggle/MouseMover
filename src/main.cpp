@@ -3,7 +3,9 @@
 #include <shellapi.h>
 #include <shlobj.h>
 #include <commctrl.h>
+#include <dwmapi.h>
 #include <strsafe.h>
+#include <uxtheme.h>
 
 #include <algorithm>
 #include <cmath>
@@ -21,6 +23,7 @@ constexpr wchar_t kWindowClassName[] = L"MouseMoverMainWindow";
 constexpr wchar_t kAppName[] = L"MouseMover";
 constexpr wchar_t kIniSectionSchedule[] = L"Schedule";
 constexpr wchar_t kIniSectionMovement[] = L"Movement";
+constexpr wchar_t kIniSectionUi[] = L"Ui";
 constexpr UINT kTrayMessage = WM_APP + 42;
 constexpr UINT kTrayIconId = 1;
 constexpr UINT_PTR kTickTimerId = 1;
@@ -35,6 +38,15 @@ constexpr int kMinDistancePx = 1;
 constexpr int kMaxDistancePx = 200;
 constexpr int kMinStepMs = 50;
 constexpr int kMaxStepMs = 1000;
+constexpr int kMinSweepRadiusPx = 80;
+constexpr int kSweepCycleSteps = 40;
+
+constexpr COLORREF kLightBackground = RGB(248, 249, 251);
+constexpr COLORREF kLightEditBackground = RGB(255, 255, 255);
+constexpr COLORREF kLightText = RGB(32, 37, 44);
+constexpr COLORREF kDarkBackground = RGB(28, 31, 36);
+constexpr COLORREF kDarkEditBackground = RGB(43, 48, 56);
+constexpr COLORREF kDarkText = RGB(242, 245, 248);
 
 enum ControlId : int {
     IdIntervalEdit = 1001,
@@ -49,6 +61,7 @@ enum ControlId : int {
     IdRunNowButton,
     IdHideButton,
     IdStatusText,
+    IdThemeToggle,
     IdTrayShow = 2001,
     IdTrayStart,
     IdTrayStop,
@@ -74,12 +87,15 @@ struct Settings {
     int stepMs = 120;
     MovementPattern pattern = MovementPattern::Jiggle;
     bool returnToStart = true;
+    bool darkMode = false;
 };
 
 struct AppState {
     HINSTANCE instance = nullptr;
     HWND hwnd = nullptr;
     HFONT font = nullptr;
+    HBRUSH backgroundBrush = nullptr;
+    HBRUSH editBrush = nullptr;
     NOTIFYICONDATAW trayIcon = {};
     bool trayAdded = false;
     bool exitRequested = false;
@@ -158,6 +174,7 @@ Settings LoadSettingsFromFile(const std::wstring& path) {
     const int pattern = static_cast<int>(GetPrivateProfileIntW(kIniSectionMovement, L"Pattern", static_cast<int>(settings.pattern), path.c_str()));
     settings.pattern = pattern == static_cast<int>(MovementPattern::Sweep) ? MovementPattern::Sweep : MovementPattern::Jiggle;
     settings.returnToStart = GetPrivateProfileIntW(kIniSectionMovement, L"ReturnToStart", settings.returnToStart ? 1U : 0U, path.c_str()) != 0U;
+    settings.darkMode = GetPrivateProfileIntW(kIniSectionUi, L"DarkMode", settings.darkMode ? 1U : 0U, path.c_str()) != 0U;
     return SanitizeSettings(settings);
 }
 
@@ -174,6 +191,7 @@ bool SaveSettingsToFile(const std::wstring& path, const Settings& rawSettings) {
     ok = WriteIniInt(path, kIniSectionMovement, L"StepMs", settings.stepMs) && ok;
     ok = WriteIniInt(path, kIniSectionMovement, L"Pattern", static_cast<int>(settings.pattern)) && ok;
     ok = WriteIniInt(path, kIniSectionMovement, L"ReturnToStart", settings.returnToStart ? 1 : 0) && ok;
+    ok = WriteIniInt(path, kIniSectionUi, L"DarkMode", settings.darkMode ? 1 : 0) && ok;
     return ok;
 }
 
@@ -214,11 +232,16 @@ POINT ClampToVirtualScreen(POINT point) {
     return point;
 }
 
+int SweepRadiusPx(const Settings& settings) {
+    return ClampInt(std::max(settings.distancePx, kMinSweepRadiusPx), kMinSweepRadiusPx, kMaxDistancePx);
+}
+
 POINT OffsetForSweep(const Settings& settings, const int stepIndex) {
-    const double angle = static_cast<double>(stepIndex % 64) * (2.0 * kPi / 64.0);
+    const int radius = SweepRadiusPx(settings);
+    const double angle = static_cast<double>(stepIndex % kSweepCycleSteps) * (2.0 * kPi / static_cast<double>(kSweepCycleSteps));
     POINT offset = {};
-    offset.x = static_cast<LONG>(std::lround(std::cos(angle) * static_cast<double>(settings.distancePx)));
-    offset.y = static_cast<LONG>(std::lround(std::sin(angle) * static_cast<double>(settings.distancePx)));
+    offset.x = static_cast<LONG>(std::lround(std::sin(angle) * static_cast<double>(radius)));
+    offset.y = static_cast<LONG>(std::lround(std::sin(angle * 2.0) * static_cast<double>(radius) / 5.0));
     return offset;
 }
 
@@ -236,6 +259,14 @@ POINT MovementOffset(const Settings& settings, const int stepIndex, std::mt19937
     }
 
     return OffsetForJiggle(settings, rng);
+}
+
+int MovementStepLimitPx(const Settings& settings) {
+    if (settings.pattern == MovementPattern::Sweep) {
+        return ClampInt(SweepRadiusPx(settings) / 4, 16, 60);
+    }
+
+    return std::max(1, settings.distancePx);
 }
 
 void MoveRelative(const int dx, const int dy) {
@@ -295,6 +326,70 @@ std::wstring StateName() {
     }
 }
 
+COLORREF BackgroundColor() {
+    return g_app.settings.darkMode ? kDarkBackground : kLightBackground;
+}
+
+COLORREF EditBackgroundColor() {
+    return g_app.settings.darkMode ? kDarkEditBackground : kLightEditBackground;
+}
+
+COLORREF TextColor() {
+    return g_app.settings.darkMode ? kDarkText : kLightText;
+}
+
+void DeleteThemeBrushes() {
+    if (g_app.backgroundBrush != nullptr) {
+        DeleteObject(g_app.backgroundBrush);
+        g_app.backgroundBrush = nullptr;
+    }
+
+    if (g_app.editBrush != nullptr) {
+        DeleteObject(g_app.editBrush);
+        g_app.editBrush = nullptr;
+    }
+}
+
+void RebuildThemeBrushes() {
+    DeleteThemeBrushes();
+    g_app.backgroundBrush = CreateSolidBrush(BackgroundColor());
+    g_app.editBrush = CreateSolidBrush(EditBackgroundColor());
+}
+
+void UpdateThemeToggleText() {
+    HWND toggle = GetDlgItem(g_app.hwnd, IdThemeToggle);
+    if (toggle != nullptr) {
+        SetWindowTextW(toggle, g_app.settings.darkMode ? L"\x2600" : L"\x263E");
+    }
+}
+
+BOOL CALLBACK ApplyThemeToChild(HWND child, LPARAM lParam) {
+    const bool darkMode = lParam != 0;
+    SetWindowTheme(child, darkMode ? L"DarkMode_Explorer" : nullptr, nullptr);
+    InvalidateRect(child, nullptr, TRUE);
+    return TRUE;
+}
+
+void ApplyTheme() {
+    RebuildThemeBrushes();
+    UpdateThemeToggleText();
+
+    if (g_app.hwnd != nullptr) {
+        const BOOL darkMode = g_app.settings.darkMode ? TRUE : FALSE;
+        DwmSetWindowAttribute(g_app.hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
+        SetWindowTheme(g_app.hwnd, g_app.settings.darkMode ? L"DarkMode_Explorer" : nullptr, nullptr);
+        EnumChildWindows(g_app.hwnd, ApplyThemeToChild, g_app.settings.darkMode ? 1 : 0);
+        InvalidateRect(g_app.hwnd, nullptr, TRUE);
+    }
+}
+
+HBRUSH ApplyControlColors(const HDC dc, const bool editBackground) {
+    SetTextColor(dc, TextColor());
+    SetBkMode(dc, editBackground ? OPAQUE : TRANSPARENT);
+    SetBkColor(dc, editBackground ? EditBackgroundColor() : BackgroundColor());
+    return editBackground ? g_app.editBrush : g_app.backgroundBrush;
+}
+
 void SetControlFont(const HWND hwnd) {
     SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(g_app.font), TRUE);
 }
@@ -345,6 +440,7 @@ void ApplySettingsToControls(const Settings& settings) {
     SetEditInt(IdStepEdit, settings.stepMs);
     SendMessageW(GetDlgItem(g_app.hwnd, IdPatternCombo), CB_SETCURSEL, static_cast<WPARAM>(settings.pattern == MovementPattern::Sweep ? 1 : 0), 0);
     SendMessageW(GetDlgItem(g_app.hwnd, IdReturnToStart), BM_SETCHECK, settings.returnToStart ? BST_CHECKED : BST_UNCHECKED, 0);
+    UpdateThemeToggleText();
 }
 
 Settings ReadSettingsFromControls() {
@@ -402,6 +498,15 @@ bool SaveCurrentSettings() {
     g_app.settings = ReadSettingsFromControls();
     ApplySettingsToControls(g_app.settings);
     return SaveSettingsToFile(g_app.settingsPath, g_app.settings);
+}
+
+void ToggleTheme() {
+    g_app.settings = ReadSettingsFromControls();
+    g_app.settings.darkMode = !g_app.settings.darkMode;
+    ApplySettingsToControls(g_app.settings);
+    SaveSettingsToFile(g_app.settingsPath, g_app.settings);
+    ApplyTheme();
+    UpdateStatusText();
 }
 
 void StartMovementCycle(const bool manualRun) {
@@ -477,7 +582,7 @@ void PerformMovementStep() {
     target.y = g_app.moveStart.y + offset.y;
     target = ClampToVirtualScreen(target);
 
-    MoveTowardPoint(target, std::max(1, g_app.settings.distancePx));
+    MoveTowardPoint(target, MovementStepLimitPx(g_app.settings));
     ++g_app.stepIndex;
 }
 
@@ -578,6 +683,7 @@ void CreateControls() {
     g_app.font = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
 
     AddControl(L"BUTTON", L"Schedule", BS_GROUPBOX, 0, -1, 14, 12, 412, 94);
+    AddControl(L"BUTTON", L"", WS_TABSTOP | BS_PUSHBUTTON, 0, IdThemeToggle, 386, 24, 30, 26);
     AddControl(L"STATIC", L"Interval (minutes)", 0, 0, -1, 32, 42, 130, 22);
     AddControl(L"EDIT", L"", WS_TABSTOP | ES_NUMBER | WS_BORDER | ES_AUTOHSCROLL, WS_EX_CLIENTEDGE, IdIntervalEdit, 176, 38, 72, 24);
     AddControl(L"STATIC", L"1 - 1440", 0, 0, -1, 260, 42, 90, 22);
@@ -638,6 +744,9 @@ LRESULT HandleCommand(const WPARAM wParam) {
     case IdHideButton:
         ShowWindow(g_app.hwnd, SW_HIDE);
         return 0;
+    case IdThemeToggle:
+        ToggleTheme();
+        return 0;
     case IdTrayShow:
         ShowMainWindow();
         return 0;
@@ -655,10 +764,26 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         g_app.hwnd = hwnd;
         g_app.settingsPath = GetSettingsPath();
         g_app.settings = LoadSettingsFromFile(g_app.settingsPath);
+        RebuildThemeBrushes();
         CreateControls();
+        ApplyTheme();
         AddTrayIcon();
         SetTimer(hwnd, kTickTimerId, kTickMs, nullptr);
         return 0;
+    case WM_ERASEBKGND: {
+        RECT rect = {};
+        GetClientRect(hwnd, &rect);
+        FillRect(reinterpret_cast<HDC>(wParam), &rect, g_app.backgroundBrush);
+        return 1;
+    }
+    case WM_CTLCOLORDLG:
+        return reinterpret_cast<LRESULT>(g_app.backgroundBrush);
+    case WM_CTLCOLORSTATIC:
+    case WM_CTLCOLORBTN:
+        return reinterpret_cast<LRESULT>(ApplyControlColors(reinterpret_cast<HDC>(wParam), false));
+    case WM_CTLCOLOREDIT:
+    case WM_CTLCOLORLISTBOX:
+        return reinterpret_cast<LRESULT>(ApplyControlColors(reinterpret_cast<HDC>(wParam), true));
     case WM_COMMAND:
         if (HandleCommand(wParam) == 0) {
             return 0;
@@ -700,6 +825,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     case WM_DESTROY:
         KillTimer(hwnd, kTickTimerId);
         RemoveTrayIcon();
+        DeleteThemeBrushes();
         PostQuitMessage(0);
         return 0;
     default:
@@ -717,7 +843,7 @@ bool RegisterWindowClass(const HINSTANCE instance) {
     windowClass.hInstance = instance;
     windowClass.hIcon = LoadAppIcon(instance, GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON));
     windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    windowClass.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+    windowClass.hbrBackground = nullptr;
     windowClass.lpszClassName = kWindowClassName;
     windowClass.hIconSm = LoadAppIcon(instance, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON));
 
@@ -778,6 +904,7 @@ bool TestSettingsRoundTrip() {
     settings.stepMs = 250;
     settings.pattern = MovementPattern::Sweep;
     settings.returnToStart = false;
+    settings.darkMode = true;
 
     if (!SaveSettingsToFile(path, settings)) {
         return false;
@@ -789,7 +916,8 @@ bool TestSettingsRoundTrip() {
         && loaded.distancePx == 33
         && loaded.stepMs == 250
         && loaded.pattern == MovementPattern::Sweep
-        && !loaded.returnToStart;
+        && !loaded.returnToStart
+        && loaded.darkMode;
 }
 
 bool TestSettingsClamping() {
@@ -812,9 +940,15 @@ bool TestMovementOffsets() {
     Settings settings;
     settings.distancePx = 20;
     settings.pattern = MovementPattern::Sweep;
-    POINT first = OffsetForSweep(settings, 0);
-    POINT quarter = OffsetForSweep(settings, 16);
-    if (first.x != 20 || first.y != 0 || quarter.x != 0 || quarter.y != 20) {
+    POINT start = OffsetForSweep(settings, 0);
+    POINT right = OffsetForSweep(settings, kSweepCycleSteps / 4);
+    POINT wobble = OffsetForSweep(settings, kSweepCycleSteps / 8);
+    POINT left = OffsetForSweep(settings, (kSweepCycleSteps * 3) / 4);
+    if (start.x != 0 || start.y != 0 || right.x != kMinSweepRadiusPx || right.y != 0 || wobble.y <= 0 || left.x != -kMinSweepRadiusPx) {
+        return false;
+    }
+
+    if (MovementStepLimitPx(settings) < 16) {
         return false;
     }
 
