@@ -41,12 +41,26 @@ constexpr int kMaxStepMs = 1000;
 constexpr int kMinSweepRadiusPx = 80;
 constexpr int kSweepCycleSteps = 40;
 
-constexpr COLORREF kLightBackground = RGB(248, 249, 251);
-constexpr COLORREF kLightEditBackground = RGB(255, 255, 255);
-constexpr COLORREF kLightText = RGB(32, 37, 44);
-constexpr COLORREF kDarkBackground = RGB(28, 31, 36);
-constexpr COLORREF kDarkEditBackground = RGB(43, 48, 56);
-constexpr COLORREF kDarkText = RGB(242, 245, 248);
+constexpr int kClientWidth = 500;
+constexpr int kClientHeight = 426;
+constexpr int kPanelRadius = 18;
+constexpr int kButtonRadius = 12;
+constexpr int kButtonSubclassId = 1;
+constexpr DWORD kDwmWindowCornerPreference = 33;
+constexpr int kDwmWindowCornerRound = 2;
+
+constexpr int kScheduleX = 20;
+constexpr int kScheduleY = 18;
+constexpr int kScheduleW = 460;
+constexpr int kScheduleH = 116;
+constexpr int kMovementX = 20;
+constexpr int kMovementY = 148;
+constexpr int kMovementW = 460;
+constexpr int kMovementH = 144;
+constexpr int kStatusX = 20;
+constexpr int kStatusY = 306;
+constexpr int kStatusW = 460;
+constexpr int kStatusH = 48;
 
 enum ControlId : int {
     IdIntervalEdit = 1001,
@@ -80,6 +94,14 @@ enum class RunState {
     Moving
 };
 
+enum class ButtonRole {
+    Neutral,
+    Primary,
+    Secondary,
+    Danger,
+    Ghost
+};
+
 struct Settings {
     int intervalMinutes = 5;
     int durationSeconds = 8;
@@ -94,7 +116,9 @@ struct AppState {
     HINSTANCE instance = nullptr;
     HWND hwnd = nullptr;
     HFONT font = nullptr;
+    HFONT titleFont = nullptr;
     HBRUSH backgroundBrush = nullptr;
+    HBRUSH surfaceBrush = nullptr;
     HBRUSH editBrush = nullptr;
     NOTIFYICONDATAW trayIcon = {};
     bool trayAdded = false;
@@ -109,10 +133,47 @@ struct AppState {
     ULONGLONG nextStepAt = 0;
     POINT moveStart = {};
     int stepIndex = 0;
+    int hoveredButtonId = 0;
+    int pressedButtonId = 0;
     std::mt19937 rng{ 0x4d6f7573U };
 };
 
 AppState g_app;
+
+struct ThemePalette {
+    COLORREF background;
+    COLORREF surface;
+    COLORREF editBackground;
+    COLORREF text;
+    COLORREF mutedText;
+    COLORREF border;
+    COLORREF accent;
+    COLORREF accentHover;
+    COLORREF accentPressed;
+    COLORREF accentSoft;
+    COLORREF accentText;
+    COLORREF danger;
+    COLORREF dangerHover;
+    COLORREF dangerPressed;
+    COLORREF neutralButton;
+    COLORREF neutralHover;
+    COLORREF neutralPressed;
+    COLORREF disabledFill;
+    COLORREF disabledText;
+    COLORREF focus;
+};
+
+struct ButtonPalette {
+    COLORREF fill;
+    COLORREF hoverFill;
+    COLORREF pressedFill;
+    COLORREF border;
+    COLORREF text;
+};
+
+RECT MakeRect(const int x, const int y, const int width, const int height) {
+    return RECT{ x, y, x + width, y + height };
+}
 
 int ClampInt(const int value, const int minimum, const int maximum) {
     return std::max(minimum, std::min(maximum, value));
@@ -326,22 +387,85 @@ std::wstring StateName() {
     }
 }
 
+const ThemePalette& CurrentPalette() {
+    static const ThemePalette light = {
+        RGB(245, 247, 250),
+        RGB(255, 255, 255),
+        RGB(255, 255, 255),
+        RGB(31, 41, 55),
+        RGB(100, 116, 139),
+        RGB(221, 226, 235),
+        RGB(37, 99, 235),
+        RGB(29, 78, 216),
+        RGB(30, 64, 175),
+        RGB(235, 242, 255),
+        RGB(255, 255, 255),
+        RGB(220, 38, 38),
+        RGB(185, 28, 28),
+        RGB(153, 27, 27),
+        RGB(248, 250, 252),
+        RGB(241, 245, 249),
+        RGB(226, 232, 240),
+        RGB(229, 231, 235),
+        RGB(148, 163, 184),
+        RGB(59, 130, 246)
+    };
+
+    static const ThemePalette dark = {
+        RGB(24, 27, 32),
+        RGB(35, 40, 47),
+        RGB(47, 54, 64),
+        RGB(241, 245, 249),
+        RGB(160, 174, 192),
+        RGB(67, 76, 89),
+        RGB(96, 165, 250),
+        RGB(59, 130, 246),
+        RGB(37, 99, 235),
+        RGB(32, 52, 84),
+        RGB(255, 255, 255),
+        RGB(248, 113, 113),
+        RGB(239, 68, 68),
+        RGB(220, 38, 38),
+        RGB(45, 52, 62),
+        RGB(55, 64, 76),
+        RGB(67, 76, 89),
+        RGB(41, 48, 57),
+        RGB(100, 116, 139),
+        RGB(147, 197, 253)
+    };
+
+    return g_app.settings.darkMode ? dark : light;
+}
+
 COLORREF BackgroundColor() {
-    return g_app.settings.darkMode ? kDarkBackground : kLightBackground;
+    return CurrentPalette().background;
+}
+
+COLORREF SurfaceColor() {
+    return CurrentPalette().surface;
 }
 
 COLORREF EditBackgroundColor() {
-    return g_app.settings.darkMode ? kDarkEditBackground : kLightEditBackground;
+    return CurrentPalette().editBackground;
 }
 
 COLORREF TextColor() {
-    return g_app.settings.darkMode ? kDarkText : kLightText;
+    return CurrentPalette().text;
+}
+
+COLORREF BorderColor() {
+    return CurrentPalette().border;
 }
 
 void DeleteThemeBrushes() {
     if (g_app.backgroundBrush != nullptr) {
         DeleteObject(g_app.backgroundBrush);
         g_app.backgroundBrush = nullptr;
+    }
+
+    if (g_app.surfaceBrush != nullptr) {
+        DeleteObject(g_app.surfaceBrush);
+        g_app.surfaceBrush = nullptr;
     }
 
     if (g_app.editBrush != nullptr) {
@@ -353,7 +477,53 @@ void DeleteThemeBrushes() {
 void RebuildThemeBrushes() {
     DeleteThemeBrushes();
     g_app.backgroundBrush = CreateSolidBrush(BackgroundColor());
+    g_app.surfaceBrush = CreateSolidBrush(SurfaceColor());
     g_app.editBrush = CreateSolidBrush(EditBackgroundColor());
+}
+
+HFONT CreateSegoeUiFont(const HWND hwnd, const int pointSize, const int weight) {
+    const UINT dpi = hwnd != nullptr ? GetDpiForWindow(hwnd) : USER_DEFAULT_SCREEN_DPI;
+    return CreateFontW(
+        -MulDiv(pointSize, static_cast<int>(dpi), 72),
+        0,
+        0,
+        0,
+        weight,
+        FALSE,
+        FALSE,
+        FALSE,
+        DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS,
+        CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY,
+        DEFAULT_PITCH | FF_DONTCARE,
+        L"Segoe UI");
+}
+
+void DeleteUiFonts() {
+    const HFONT stockFont = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+    if (g_app.font != nullptr && g_app.font != stockFont) {
+        DeleteObject(g_app.font);
+    }
+    if (g_app.titleFont != nullptr && g_app.titleFont != stockFont && g_app.titleFont != g_app.font) {
+        DeleteObject(g_app.titleFont);
+    }
+
+    g_app.font = nullptr;
+    g_app.titleFont = nullptr;
+}
+
+void CreateUiFonts() {
+    DeleteUiFonts();
+    g_app.font = CreateSegoeUiFont(g_app.hwnd, 9, FW_NORMAL);
+    g_app.titleFont = CreateSegoeUiFont(g_app.hwnd, 10, FW_SEMIBOLD);
+
+    if (g_app.font == nullptr) {
+        g_app.font = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+    }
+    if (g_app.titleFont == nullptr) {
+        g_app.titleFont = g_app.font;
+    }
 }
 
 void UpdateThemeToggleText() {
@@ -377,17 +547,245 @@ void ApplyTheme() {
     if (g_app.hwnd != nullptr) {
         const BOOL darkMode = g_app.settings.darkMode ? TRUE : FALSE;
         DwmSetWindowAttribute(g_app.hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
+        const int cornerPreference = kDwmWindowCornerRound;
+        DwmSetWindowAttribute(
+            g_app.hwnd,
+            static_cast<DWMWINDOWATTRIBUTE>(kDwmWindowCornerPreference),
+            &cornerPreference,
+            sizeof(cornerPreference));
         SetWindowTheme(g_app.hwnd, g_app.settings.darkMode ? L"DarkMode_Explorer" : nullptr, nullptr);
         EnumChildWindows(g_app.hwnd, ApplyThemeToChild, g_app.settings.darkMode ? 1 : 0);
         InvalidateRect(g_app.hwnd, nullptr, TRUE);
     }
 }
 
-HBRUSH ApplyControlColors(const HDC dc, const bool editBackground) {
+HBRUSH ApplySurfaceControlColors(const HDC dc) {
     SetTextColor(dc, TextColor());
-    SetBkMode(dc, editBackground ? OPAQUE : TRANSPARENT);
-    SetBkColor(dc, editBackground ? EditBackgroundColor() : BackgroundColor());
-    return editBackground ? g_app.editBrush : g_app.backgroundBrush;
+    SetBkMode(dc, TRANSPARENT);
+    SetBkColor(dc, SurfaceColor());
+    return g_app.surfaceBrush;
+}
+
+HBRUSH ApplyEditControlColors(const HDC dc) {
+    SetTextColor(dc, TextColor());
+    SetBkMode(dc, OPAQUE);
+    SetBkColor(dc, EditBackgroundColor());
+    return g_app.editBrush;
+}
+
+void DrawRoundedRect(const HDC dc, const RECT& rect, const int radius, const COLORREF fill, const COLORREF border, const int borderWidth = 1) {
+    HBRUSH brush = CreateSolidBrush(fill);
+    HPEN pen = CreatePen(PS_SOLID, borderWidth, border);
+    HGDIOBJ oldBrush = SelectObject(dc, brush);
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+
+    RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, radius, radius);
+
+    SelectObject(dc, oldBrush);
+    SelectObject(dc, oldPen);
+    DeleteObject(brush);
+    DeleteObject(pen);
+}
+
+ButtonRole RoleForButton(const int id) {
+    switch (id) {
+    case IdStartButton:
+        return ButtonRole::Primary;
+    case IdRunNowButton:
+        return ButtonRole::Secondary;
+    case IdStopButton:
+        return ButtonRole::Danger;
+    case IdThemeToggle:
+        return ButtonRole::Ghost;
+    case IdSaveButton:
+    case IdHideButton:
+    default:
+        return ButtonRole::Neutral;
+    }
+}
+
+ButtonPalette PaletteForButtonRole(const ButtonRole role) {
+    const ThemePalette& theme = CurrentPalette();
+    switch (role) {
+    case ButtonRole::Primary:
+        return ButtonPalette{ theme.accent, theme.accentHover, theme.accentPressed, theme.accent, theme.accentText };
+    case ButtonRole::Secondary:
+        return ButtonPalette{ theme.accentSoft, theme.neutralHover, theme.neutralPressed, theme.accent, theme.accent };
+    case ButtonRole::Danger:
+        return ButtonPalette{ theme.danger, theme.dangerHover, theme.dangerPressed, theme.danger, RGB(255, 255, 255) };
+    case ButtonRole::Ghost:
+        return ButtonPalette{ theme.surface, theme.neutralHover, theme.neutralPressed, theme.border, theme.mutedText };
+    case ButtonRole::Neutral:
+    default:
+        return ButtonPalette{ theme.neutralButton, theme.neutralHover, theme.neutralPressed, theme.border, theme.text };
+    }
+}
+
+void DrawFocusRing(const HDC dc, RECT rect, const int radius) {
+    InflateRect(&rect, -3, -3);
+    HPEN pen = CreatePen(PS_SOLID, 1, CurrentPalette().focus);
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+
+    RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, radius, radius);
+
+    SelectObject(dc, oldBrush);
+    SelectObject(dc, oldPen);
+    DeleteObject(pen);
+}
+
+void DrawOwnerButton(const DRAWITEMSTRUCT& item) {
+    const int id = static_cast<int>(item.CtlID);
+    const bool enabled = (item.itemState & ODS_DISABLED) == 0;
+    const bool pressed = enabled && ((item.itemState & ODS_SELECTED) != 0 || g_app.pressedButtonId == id);
+    const bool hovered = enabled && g_app.hoveredButtonId == id;
+    const bool focused = enabled && (item.itemState & ODS_FOCUS) != 0;
+
+    ButtonPalette colors = PaletteForButtonRole(RoleForButton(id));
+    if (!enabled) {
+        colors.fill = CurrentPalette().disabledFill;
+        colors.hoverFill = colors.fill;
+        colors.pressedFill = colors.fill;
+        colors.border = CurrentPalette().border;
+        colors.text = CurrentPalette().disabledText;
+    }
+
+    const COLORREF fill = pressed ? colors.pressedFill : (hovered ? colors.hoverFill : colors.fill);
+    RECT rect = item.rcItem;
+    DrawRoundedRect(item.hDC, rect, kButtonRadius, fill, colors.border);
+
+    wchar_t text[128] = {};
+    GetWindowTextW(item.hwndItem, text, ARRAYSIZE(text));
+
+    SetBkMode(item.hDC, TRANSPARENT);
+    SetTextColor(item.hDC, colors.text);
+    HGDIOBJ oldFont = SelectObject(item.hDC, g_app.font);
+    if (pressed) {
+        OffsetRect(&rect, 0, 1);
+    }
+    DrawTextW(item.hDC, text, -1, &rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    SelectObject(item.hDC, oldFont);
+
+    if (focused) {
+        DrawFocusRing(item.hDC, item.rcItem, kButtonRadius);
+    }
+}
+
+void InvalidateButton(const HWND hwnd) {
+    if (hwnd != nullptr) {
+        InvalidateRect(hwnd, nullptr, TRUE);
+    }
+}
+
+LRESULT CALLBACK ButtonSubclassProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR) {
+    const int id = GetDlgCtrlID(hwnd);
+    switch (message) {
+    case WM_MOUSEMOVE:
+        if (g_app.hoveredButtonId != id) {
+            g_app.hoveredButtonId = id;
+            InvalidateButton(hwnd);
+
+            TRACKMOUSEEVENT track = {};
+            track.cbSize = sizeof(track);
+            track.dwFlags = TME_LEAVE;
+            track.hwndTrack = hwnd;
+            TrackMouseEvent(&track);
+        }
+        break;
+    case WM_MOUSELEAVE:
+        if (g_app.hoveredButtonId == id) {
+            g_app.hoveredButtonId = 0;
+            InvalidateButton(hwnd);
+        }
+        break;
+    case WM_LBUTTONDOWN:
+        g_app.pressedButtonId = id;
+        InvalidateButton(hwnd);
+        break;
+    case WM_LBUTTONUP:
+    case WM_CANCELMODE:
+        if (g_app.pressedButtonId == id) {
+            g_app.pressedButtonId = 0;
+            InvalidateButton(hwnd);
+        }
+        break;
+    case WM_ENABLE:
+    case WM_SETFOCUS:
+    case WM_KILLFOCUS:
+        InvalidateButton(hwnd);
+        break;
+    case WM_NCDESTROY:
+        RemoveWindowSubclass(hwnd, ButtonSubclassProc, kButtonSubclassId);
+        break;
+    default:
+        break;
+    }
+
+    return DefSubclassProc(hwnd, message, wParam, lParam);
+}
+
+void InstallButtonSubclass(const HWND hwnd) {
+    if (hwnd != nullptr) {
+        SetWindowSubclass(hwnd, ButtonSubclassProc, kButtonSubclassId, 0);
+    }
+}
+
+COLORREF StatusAccentColor() {
+    switch (g_app.state) {
+    case RunState::Waiting:
+        return CurrentPalette().accent;
+    case RunState::Moving:
+        return CurrentPalette().danger;
+    case RunState::Stopped:
+    default:
+        return CurrentPalette().mutedText;
+    }
+}
+
+void DrawPanelTitle(const HDC dc, const RECT& panel, const wchar_t* title) {
+    RECT titleRect = panel;
+    titleRect.left += 18;
+    titleRect.top += 12;
+    titleRect.bottom = titleRect.top + 24;
+    titleRect.right -= 18;
+
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, TextColor());
+    HGDIOBJ oldFont = SelectObject(dc, g_app.titleFont);
+    DrawTextW(dc, title, -1, &titleRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    SelectObject(dc, oldFont);
+}
+
+void DrawPanel(const HDC dc, const RECT& rect, const wchar_t* title) {
+    DrawRoundedRect(dc, rect, kPanelRadius, SurfaceColor(), BorderColor());
+    if (title != nullptr && title[0] != L'\0') {
+        DrawPanelTitle(dc, rect, title);
+    }
+}
+
+void DrawStatusPanel(const HDC dc, const RECT& rect) {
+    DrawRoundedRect(dc, rect, kPanelRadius, SurfaceColor(), BorderColor());
+
+    RECT indicator = MakeRect(rect.left + 18, rect.top + 18, 10, 10);
+    HBRUSH brush = CreateSolidBrush(StatusAccentColor());
+    HPEN pen = CreatePen(PS_SOLID, 1, StatusAccentColor());
+    HGDIOBJ oldBrush = SelectObject(dc, brush);
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    Ellipse(dc, indicator.left, indicator.top, indicator.right, indicator.bottom);
+    SelectObject(dc, oldBrush);
+    SelectObject(dc, oldPen);
+    DeleteObject(brush);
+    DeleteObject(pen);
+}
+
+void PaintWindow(const HDC dc) {
+    RECT client = {};
+    GetClientRect(g_app.hwnd, &client);
+    FillRect(dc, &client, g_app.backgroundBrush);
+
+    DrawPanel(dc, MakeRect(kScheduleX, kScheduleY, kScheduleW, kScheduleH), L"Schedule");
+    DrawPanel(dc, MakeRect(kMovementX, kMovementY, kMovementW, kMovementH), L"Movement");
+    DrawStatusPanel(dc, MakeRect(kStatusX, kStatusY, kStatusW, kStatusH));
 }
 
 void SetControlFont(const HWND hwnd) {
@@ -414,6 +812,12 @@ HWND AddControl(const wchar_t* className, const wchar_t* text, const DWORD style
     }
 
     return control;
+}
+
+HWND AddButton(const wchar_t* text, const int id, const int x, const int y, const int width, const int height) {
+    HWND button = AddControl(L"BUTTON", text, WS_TABSTOP | BS_OWNERDRAW, 0, id, x, y, width, height);
+    InstallButtonSubclass(button);
+    return button;
 }
 
 void SetEditInt(const int id, const int value) {
@@ -484,6 +888,8 @@ void UpdateStatusText() {
     }
 
     SetWindowTextW(GetDlgItem(g_app.hwnd, IdStatusText), status.c_str());
+    RECT statusRect = MakeRect(kStatusX, kStatusY, kStatusW, kStatusH);
+    InvalidateRect(g_app.hwnd, &statusRect, FALSE);
     UpdateTrayTooltip();
 }
 
@@ -492,6 +898,9 @@ void UpdateButtons() {
     EnableWindow(GetDlgItem(g_app.hwnd, IdStartButton), g_app.scheduleEnabled ? FALSE : TRUE);
     EnableWindow(GetDlgItem(g_app.hwnd, IdStopButton), g_app.state == RunState::Stopped ? FALSE : TRUE);
     EnableWindow(GetDlgItem(g_app.hwnd, IdRunNowButton), moving ? FALSE : TRUE);
+    InvalidateButton(GetDlgItem(g_app.hwnd, IdStartButton));
+    InvalidateButton(GetDlgItem(g_app.hwnd, IdStopButton));
+    InvalidateButton(GetDlgItem(g_app.hwnd, IdRunNowButton));
 }
 
 bool SaveCurrentSettings() {
@@ -680,34 +1089,32 @@ void ShowTrayMenu() {
 }
 
 void CreateControls() {
-    g_app.font = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+    CreateUiFonts();
 
-    AddControl(L"BUTTON", L"Schedule", BS_GROUPBOX, 0, -1, 14, 12, 412, 94);
-    AddControl(L"BUTTON", L"", WS_TABSTOP | BS_PUSHBUTTON, 0, IdThemeToggle, 386, 24, 30, 26);
-    AddControl(L"STATIC", L"Interval (minutes)", 0, 0, -1, 32, 42, 130, 22);
-    AddControl(L"EDIT", L"", WS_TABSTOP | ES_NUMBER | WS_BORDER | ES_AUTOHSCROLL, WS_EX_CLIENTEDGE, IdIntervalEdit, 176, 38, 72, 24);
-    AddControl(L"STATIC", L"1 - 1440", 0, 0, -1, 260, 42, 90, 22);
-    AddControl(L"STATIC", L"Duration (seconds)", 0, 0, -1, 32, 74, 130, 22);
-    AddControl(L"EDIT", L"", WS_TABSTOP | ES_NUMBER | WS_BORDER | ES_AUTOHSCROLL, WS_EX_CLIENTEDGE, IdDurationEdit, 176, 70, 72, 24);
-    AddControl(L"STATIC", L"5 - 10", 0, 0, -1, 260, 74, 90, 22);
+    AddButton(L"", IdThemeToggle, 432, 32, 32, 30);
+    AddControl(L"STATIC", L"Interval (minutes)", 0, 0, -1, 38, 62, 138, 22);
+    AddControl(L"EDIT", L"", WS_TABSTOP | ES_NUMBER | ES_AUTOHSCROLL, WS_EX_CLIENTEDGE, IdIntervalEdit, 190, 58, 78, 25);
+    AddControl(L"STATIC", L"1 - 1440", 0, 0, -1, 284, 62, 90, 22);
+    AddControl(L"STATIC", L"Duration (seconds)", 0, 0, -1, 38, 98, 138, 22);
+    AddControl(L"EDIT", L"", WS_TABSTOP | ES_NUMBER | ES_AUTOHSCROLL, WS_EX_CLIENTEDGE, IdDurationEdit, 190, 94, 78, 25);
+    AddControl(L"STATIC", L"5 - 10", 0, 0, -1, 284, 98, 90, 22);
 
-    AddControl(L"BUTTON", L"Movement", BS_GROUPBOX, 0, -1, 14, 118, 412, 126);
-    AddControl(L"STATIC", L"Pattern", 0, 0, -1, 32, 150, 130, 22);
-    HWND combo = AddControl(L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST, 0, IdPatternCombo, 176, 146, 178, 120);
+    AddControl(L"STATIC", L"Pattern", 0, 0, -1, 38, 192, 138, 22);
+    HWND combo = AddControl(L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST, 0, IdPatternCombo, 190, 188, 190, 120);
     SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Subtle jiggle"));
     SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Visible sweep"));
-    AddControl(L"BUTTON", L"Return to start after each cycle", WS_TABSTOP | BS_AUTOCHECKBOX, 0, IdReturnToStart, 176, 178, 222, 24);
-    AddControl(L"STATIC", L"Distance / radius (px)", 0, 0, -1, 32, 208, 140, 22);
-    AddControl(L"EDIT", L"", WS_TABSTOP | ES_NUMBER | WS_BORDER | ES_AUTOHSCROLL, WS_EX_CLIENTEDGE, IdDistanceEdit, 176, 204, 72, 24);
-    AddControl(L"STATIC", L"Step speed (ms)", 0, 0, -1, 260, 208, 104, 22);
-    AddControl(L"EDIT", L"", WS_TABSTOP | ES_NUMBER | WS_BORDER | ES_AUTOHSCROLL, WS_EX_CLIENTEDGE, IdStepEdit, 362, 204, 48, 24);
+    AddControl(L"BUTTON", L"Return to start after each cycle", WS_TABSTOP | BS_AUTOCHECKBOX, 0, IdReturnToStart, 190, 224, 250, 24);
+    AddControl(L"STATIC", L"Distance / radius (px)", 0, 0, -1, 38, 258, 142, 22);
+    AddControl(L"EDIT", L"", WS_TABSTOP | ES_NUMBER | ES_AUTOHSCROLL, WS_EX_CLIENTEDGE, IdDistanceEdit, 190, 254, 78, 25);
+    AddControl(L"STATIC", L"Step speed (ms)", 0, 0, -1, 286, 258, 98, 22);
+    AddControl(L"EDIT", L"", WS_TABSTOP | ES_NUMBER | ES_AUTOHSCROLL, WS_EX_CLIENTEDGE, IdStepEdit, 396, 254, 68, 25);
 
-    AddControl(L"STATIC", L"Stopped. Configure settings, then Start or Run Now.", 0, 0, IdStatusText, 20, 258, 406, 24);
-    AddControl(L"BUTTON", L"Save Settings", WS_TABSTOP | BS_PUSHBUTTON, 0, IdSaveButton, 20, 294, 98, 30);
-    AddControl(L"BUTTON", L"Start", WS_TABSTOP | BS_DEFPUSHBUTTON, 0, IdStartButton, 126, 294, 72, 30);
-    AddControl(L"BUTTON", L"Stop", WS_TABSTOP | BS_PUSHBUTTON, 0, IdStopButton, 206, 294, 72, 30);
-    AddControl(L"BUTTON", L"Run Now", WS_TABSTOP | BS_PUSHBUTTON, 0, IdRunNowButton, 286, 294, 78, 30);
-    AddControl(L"BUTTON", L"Hide", WS_TABSTOP | BS_PUSHBUTTON, 0, IdHideButton, 372, 294, 54, 30);
+    AddControl(L"STATIC", L"Stopped. Configure settings, then Start or Run Now.", SS_CENTERIMAGE, 0, IdStatusText, 58, 318, 404, 24);
+    AddButton(L"Save Settings", IdSaveButton, 20, 372, 112, 34);
+    AddButton(L"Start", IdStartButton, 140, 372, 76, 34);
+    AddButton(L"Stop", IdStopButton, 224, 372, 76, 34);
+    AddButton(L"Run Now", IdRunNowButton, 308, 372, 88, 34);
+    AddButton(L"Hide", IdHideButton, 404, 372, 76, 34);
 
     ApplySettingsToControls(g_app.settings);
     UpdateButtons();
@@ -776,14 +1183,29 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         FillRect(reinterpret_cast<HDC>(wParam), &rect, g_app.backgroundBrush);
         return 1;
     }
+    case WM_PAINT: {
+        PAINTSTRUCT paint = {};
+        HDC dc = BeginPaint(hwnd, &paint);
+        PaintWindow(dc);
+        EndPaint(hwnd, &paint);
+        return 0;
+    }
     case WM_CTLCOLORDLG:
         return reinterpret_cast<LRESULT>(g_app.backgroundBrush);
     case WM_CTLCOLORSTATIC:
     case WM_CTLCOLORBTN:
-        return reinterpret_cast<LRESULT>(ApplyControlColors(reinterpret_cast<HDC>(wParam), false));
+        return reinterpret_cast<LRESULT>(ApplySurfaceControlColors(reinterpret_cast<HDC>(wParam)));
     case WM_CTLCOLOREDIT:
     case WM_CTLCOLORLISTBOX:
-        return reinterpret_cast<LRESULT>(ApplyControlColors(reinterpret_cast<HDC>(wParam), true));
+        return reinterpret_cast<LRESULT>(ApplyEditControlColors(reinterpret_cast<HDC>(wParam)));
+    case WM_DRAWITEM: {
+        const DRAWITEMSTRUCT* item = reinterpret_cast<const DRAWITEMSTRUCT*>(lParam);
+        if (item != nullptr && item->CtlType == ODT_BUTTON) {
+            DrawOwnerButton(*item);
+            return TRUE;
+        }
+        break;
+    }
     case WM_COMMAND:
         if (HandleCommand(wParam) == 0) {
             return 0;
@@ -826,6 +1248,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         KillTimer(hwnd, kTickTimerId);
         RemoveTrayIcon();
         DeleteThemeBrushes();
+        DeleteUiFonts();
         PostQuitMessage(0);
         return 0;
     default:
@@ -851,14 +1274,15 @@ bool RegisterWindowClass(const HINSTANCE instance) {
 }
 
 HWND CreateMainWindow(const HINSTANCE instance) {
-    RECT rect = { 0, 0, 456, 374 };
-    AdjustWindowRectEx(&rect, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE, 0);
+    constexpr DWORD windowStyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
+    RECT rect = { 0, 0, kClientWidth, kClientHeight };
+    AdjustWindowRectEx(&rect, windowStyle, FALSE, 0);
 
     return CreateWindowExW(
         0,
         kWindowClassName,
         kAppName,
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+        windowStyle,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
         rect.right - rect.left,
