@@ -24,6 +24,7 @@ constexpr wchar_t kAppName[] = L"MouseMover";
 constexpr wchar_t kIniSectionSchedule[] = L"Schedule";
 constexpr wchar_t kIniSectionMovement[] = L"Movement";
 constexpr wchar_t kIniSectionUi[] = L"Ui";
+constexpr wchar_t kCreditText[] = L"Created by Flex3Designs";
 constexpr UINT kTrayMessage = WM_APP + 42;
 constexpr UINT kTrayIconId = 1;
 constexpr UINT_PTR kTickTimerId = 1;
@@ -117,6 +118,7 @@ struct AppState {
     HWND hwnd = nullptr;
     HFONT font = nullptr;
     HFONT titleFont = nullptr;
+    HFONT creditFont = nullptr;
     HBRUSH backgroundBrush = nullptr;
     HBRUSH surfaceBrush = nullptr;
     HBRUSH editBrush = nullptr;
@@ -508,21 +510,29 @@ void DeleteUiFonts() {
     if (g_app.titleFont != nullptr && g_app.titleFont != stockFont && g_app.titleFont != g_app.font) {
         DeleteObject(g_app.titleFont);
     }
+    if (g_app.creditFont != nullptr && g_app.creditFont != stockFont && g_app.creditFont != g_app.font && g_app.creditFont != g_app.titleFont) {
+        DeleteObject(g_app.creditFont);
+    }
 
     g_app.font = nullptr;
     g_app.titleFont = nullptr;
+    g_app.creditFont = nullptr;
 }
 
 void CreateUiFonts() {
     DeleteUiFonts();
     g_app.font = CreateSegoeUiFont(g_app.hwnd, 9, FW_NORMAL);
     g_app.titleFont = CreateSegoeUiFont(g_app.hwnd, 10, FW_SEMIBOLD);
+    g_app.creditFont = CreateSegoeUiFont(g_app.hwnd, 8, FW_NORMAL);
 
     if (g_app.font == nullptr) {
         g_app.font = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
     }
     if (g_app.titleFont == nullptr) {
         g_app.titleFont = g_app.font;
+    }
+    if (g_app.creditFont == nullptr) {
+        g_app.creditFont = g_app.font;
     }
 }
 
@@ -778,6 +788,15 @@ void DrawStatusPanel(const HDC dc, const RECT& rect) {
     DeleteObject(pen);
 }
 
+void DrawCreditText(const HDC dc) {
+    RECT creditRect = MakeRect(260, 408, kClientWidth - 280, 16);
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, CurrentPalette().mutedText);
+    HGDIOBJ oldFont = SelectObject(dc, g_app.creditFont);
+    DrawTextW(dc, kCreditText, -1, &creditRect, DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    SelectObject(dc, oldFont);
+}
+
 void PaintWindow(const HDC dc) {
     RECT client = {};
     GetClientRect(g_app.hwnd, &client);
@@ -786,6 +805,7 @@ void PaintWindow(const HDC dc) {
     DrawPanel(dc, MakeRect(kScheduleX, kScheduleY, kScheduleW, kScheduleH), L"Schedule");
     DrawPanel(dc, MakeRect(kMovementX, kMovementY, kMovementW, kMovementH), L"Movement");
     DrawStatusPanel(dc, MakeRect(kStatusX, kStatusY, kStatusW, kStatusH));
+    DrawCreditText(dc);
 }
 
 void SetControlFont(const HWND hwnd) {
